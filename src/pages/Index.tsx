@@ -1,16 +1,18 @@
 import { Sidebar } from "@/components/Sidebar";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import { 
   Package, Layout, Calculator, Sparkles, Moon, Sun, 
   Loader2, User, LayoutTemplate, Volume2, Settings,
-  Download, Eye, Trash2, Clock, LucideIcon 
+  Download, Eye, Trash2, Clock, LucideIcon, Send, RefreshCw, X 
 } from "lucide-react";
 
 // Dark Mode Toggle Component
@@ -67,13 +69,147 @@ const FeatureCard = ({ icon: Icon, title, description }: { icon: LucideIcon; tit
   );
 };
 
+// Loading Modal Component
+const LoadingModal = ({ 
+  isOpen, 
+  onClose, 
+  progress 
+}: { 
+  isOpen: boolean; 
+  onClose: () => void; 
+  progress: number;
+}) => {
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent className="sm:max-w-md glass-panel border-white/20">
+        <DialogHeader>
+          <DialogTitle className="text-center text-2xl">Generating Your Slides</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-6 py-6">
+          <div className="flex justify-center">
+            <div className="relative">
+              <Loader2 className="h-16 w-16 animate-spin text-primary" />
+              <Sparkles className="h-6 w-6 text-primary absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
+            </div>
+          </div>
+          
+          <div className="space-y-2">
+            <Progress value={progress} className="h-2" />
+            <p className="text-sm text-center text-muted-foreground">
+              {progress}% complete
+            </p>
+          </div>
+
+          <Button
+            variant="outline"
+            onClick={onClose}
+            className="w-full"
+          >
+            <X className="mr-2 h-4 w-4" />
+            Cancel
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
 // Generation Form Component
 const GenerationForm = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [script, setScript] = useState("");
+  const [creatorName, setCreatorName] = useState("");
+  const [template, setTemplate] = useState("");
+  const [voiceTone, setVoiceTone] = useState("");
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [progress, setProgress] = useState(0);
   
-  const WEBHOOK_URL = "https://your-n8n-instance.com/webhook/slides";
+  const [submitWebhookUrl, setSubmitWebhookUrl] = useState("");
+  const [statusWebhookUrl, setStatusWebhookUrl] = useState("");
+  
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Load webhook URLs from localStorage
+  useEffect(() => {
+    const savedSubmitUrl = localStorage.getItem("submitWebhookUrl");
+    const savedStatusUrl = localStorage.getItem("statusWebhookUrl");
+    if (savedSubmitUrl) setSubmitWebhookUrl(savedSubmitUrl);
+    if (savedStatusUrl) setStatusWebhookUrl(savedStatusUrl);
+  }, []);
+
+  // Save webhook URLs to localStorage
+  const saveWebhookUrls = () => {
+    localStorage.setItem("submitWebhookUrl", submitWebhookUrl);
+    localStorage.setItem("statusWebhookUrl", statusWebhookUrl);
+    toast.success("Webhook URLs saved!");
+    setIsSettingsOpen(false);
+  };
+
+  const testConnection = async (url: string, type: "submit" | "status") => {
+    if (!url.trim()) {
+      toast.error("Please enter a webhook URL");
+      return;
+    }
+
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ test: true }),
+      });
+      
+      if (response.ok) {
+        toast.success(`${type === "submit" ? "Submit" : "Status"} webhook connected successfully!`);
+      } else {
+        toast.error(`Connection failed: ${response.statusText}`);
+      }
+    } catch (error) {
+      toast.error("Connection failed. Check URL and try again.");
+    }
+  };
+
+  const stopPolling = () => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  };
+
+  const pollStatus = async (jobId: string) => {
+    try {
+      const response = await fetch(statusWebhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: jobId }),
+      });
+
+      const data = await response.json();
+      
+      if (data.progress !== undefined) {
+        setProgress(data.progress);
+      }
+
+      if (data.status === "completed") {
+        stopPolling();
+        setIsGenerating(false);
+        setProgress(100);
+        toast.success("Slides generated successfully!");
+        // Here you would handle the slides data
+      } else if (data.status === "failed") {
+        stopPolling();
+        setIsGenerating(false);
+        toast.error("Generation failed. Please try again.");
+      }
+    } catch (error) {
+      console.error("Polling error:", error);
+    }
+  };
 
   const handleGenerate = async () => {
     if (!script.trim()) {
@@ -81,108 +217,226 @@ const GenerationForm = () => {
       return;
     }
 
+    if (!submitWebhookUrl || !statusWebhookUrl) {
+      toast.error("Please configure webhook URLs in settings");
+      setIsSettingsOpen(true);
+      return;
+    }
+
     setIsGenerating(true);
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-    toast.success("Slides generated successfully!");
-    setIsGenerating(false);
+    setProgress(0);
+
+    try {
+      const response = await fetch(submitWebhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          script,
+          creator_name: creatorName,
+          template,
+          voice_tone: voiceTone,
+        }),
+      });
+
+      const data = await response.json();
+      
+      if (data.job_id) {
+        // Start polling
+        pollingIntervalRef.current = setInterval(() => {
+          pollStatus(data.job_id);
+        }, 4000); // Poll every 4 seconds
+
+        // Set 5 minute timeout
+        timeoutRef.current = setTimeout(() => {
+          stopPolling();
+          setIsGenerating(false);
+          toast.error("Generation timed out. Please try again.");
+        }, 5 * 60 * 1000);
+      } else {
+        setIsGenerating(false);
+        toast.error("Failed to start generation");
+      }
+    } catch (error) {
+      setIsGenerating(false);
+      toast.error("Failed to connect to webhook");
+    }
   };
 
+  const handleCancel = () => {
+    stopPolling();
+    setIsGenerating(false);
+    setProgress(0);
+    toast.info("Generation cancelled");
+  };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopPolling();
+    };
+  }, []);
+
   return (
-    <div className="space-y-6">
-      <div className="space-y-3">
-        <Label htmlFor="script" className="text-base font-semibold">
-          Your Presentation Script
-        </Label>
-        <Textarea
-          id="script"
-          placeholder="Tell us about your presentation..."
-          value={script}
-          onChange={(e) => setScript(e.target.value)}
-          className="min-h-[200px] glass-panel border-white/20 focus:border-primary focus:neon-glow resize-none text-base"
-        />
+    <>
+      <LoadingModal 
+        isOpen={isGenerating} 
+        onClose={handleCancel} 
+        progress={progress} 
+      />
+
+      <div className="space-y-6">
+        {/* Webhook Settings Section */}
+        <Collapsible open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
+          <CollapsibleTrigger asChild>
+            <Button 
+              variant="ghost" 
+              className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground mb-4"
+            >
+              <Settings className="w-4 h-4" />
+              Webhook Configuration
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="space-y-4 mb-6 p-4 glass-panel rounded-xl">
+            <div className="space-y-2">
+              <Label htmlFor="submitWebhook" className="flex items-center gap-2">
+                <Send className="w-4 h-4 text-primary" />
+                n8n Submit Webhook URL
+              </Label>
+              <div className="flex gap-2">
+                <Input
+                  id="submitWebhook"
+                  placeholder="https://your-n8n.com/webhook/submit"
+                  value={submitWebhookUrl}
+                  onChange={(e) => setSubmitWebhookUrl(e.target.value)}
+                  className="glass-panel border-white/20 focus:border-primary focus:neon-glow"
+                />
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => testConnection(submitWebhookUrl, "submit")}
+                >
+                  <Send className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="statusWebhook" className="flex items-center gap-2">
+                <RefreshCw className="w-4 h-4 text-primary" />
+                n8n Status Webhook URL
+              </Label>
+              <div className="flex gap-2">
+                <Input
+                  id="statusWebhook"
+                  placeholder="https://your-n8n.com/webhook/status"
+                  value={statusWebhookUrl}
+                  onChange={(e) => setStatusWebhookUrl(e.target.value)}
+                  className="glass-panel border-white/20 focus:border-primary focus:neon-glow"
+                />
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => testConnection(statusWebhookUrl, "status")}
+                >
+                  <RefreshCw className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
+
+            <Button onClick={saveWebhookUrls} className="w-full">
+              Save Configuration
+            </Button>
+          </CollapsibleContent>
+        </Collapsible>
+
+        <div className="space-y-3">
+          <Label htmlFor="script" className="text-base font-semibold">
+            Your Presentation Script
+          </Label>
+          <Textarea
+            id="script"
+            placeholder="Tell us about your presentation..."
+            value={script}
+            onChange={(e) => setScript(e.target.value)}
+            className="min-h-[200px] glass-panel border-white/20 focus:border-primary focus:neon-glow resize-none text-base"
+          />
+        </div>
+
+        <Collapsible open={isAdvancedOpen} onOpenChange={setIsAdvancedOpen}>
+          <CollapsibleTrigger asChild>
+            <Button 
+              variant="ghost" 
+              className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+            >
+              <Settings className="w-4 h-4" />
+              Advanced Options
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="creator" className="flex items-center gap-2">
+                  <User className="w-4 h-4 text-primary" />
+                  Creator Name
+                </Label>
+                <Input
+                  id="creator"
+                  placeholder="Your name"
+                  value={creatorName}
+                  onChange={(e) => setCreatorName(e.target.value)}
+                  className="glass-panel border-white/20 focus:border-primary focus:neon-glow"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="template" className="flex items-center gap-2">
+                  <LayoutTemplate className="w-4 h-4 text-primary" />
+                  Template
+                </Label>
+                <Select value={template} onValueChange={setTemplate}>
+                  <SelectTrigger className="glass-panel border-white/20 focus:border-primary focus:neon-glow">
+                    <SelectValue placeholder="Select template" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="modern">Modern</SelectItem>
+                    <SelectItem value="minimal">Minimal</SelectItem>
+                    <SelectItem value="corporate">Corporate</SelectItem>
+                    <SelectItem value="creative">Creative</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="tone" className="flex items-center gap-2">
+                  <Volume2 className="w-4 h-4 text-primary" />
+                  Voice Tone
+                </Label>
+                <Select value={voiceTone} onValueChange={setVoiceTone}>
+                  <SelectTrigger className="glass-panel border-white/20 focus:border-primary focus:neon-glow">
+                    <SelectValue placeholder="Select tone" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="professional">Professional</SelectItem>
+                    <SelectItem value="casual">Casual</SelectItem>
+                    <SelectItem value="enthusiastic">Enthusiastic</SelectItem>
+                    <SelectItem value="formal">Formal</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+
+        <Button
+          onClick={handleGenerate}
+          disabled={isGenerating}
+          className="w-full h-14 text-lg font-semibold bg-gradient-to-r from-primary to-neon-blue-dark hover:from-neon-blue-dark hover:to-primary neon-glow-strong transition-all duration-300 hover:scale-[1.02]"
+        >
+          <Sparkles className="mr-2 h-5 w-5" />
+          Generate Slides
+        </Button>
       </div>
-
-      <Collapsible open={isAdvancedOpen} onOpenChange={setIsAdvancedOpen}>
-        <CollapsibleTrigger asChild>
-          <Button 
-            variant="ghost" 
-            className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
-          >
-            <Settings className="w-4 h-4" />
-            Advanced Options
-          </Button>
-        </CollapsibleTrigger>
-        <CollapsibleContent className="mt-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="creator" className="flex items-center gap-2">
-                <User className="w-4 h-4 text-primary" />
-                Creator Name
-              </Label>
-              <Input
-                id="creator"
-                placeholder="Your name"
-                className="glass-panel border-white/20 focus:border-primary focus:neon-glow"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="template" className="flex items-center gap-2">
-                <LayoutTemplate className="w-4 h-4 text-primary" />
-                Template
-              </Label>
-              <Select>
-                <SelectTrigger className="glass-panel border-white/20 focus:border-primary focus:neon-glow">
-                  <SelectValue placeholder="Select template" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="modern">Modern</SelectItem>
-                  <SelectItem value="minimal">Minimal</SelectItem>
-                  <SelectItem value="corporate">Corporate</SelectItem>
-                  <SelectItem value="creative">Creative</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="tone" className="flex items-center gap-2">
-                <Volume2 className="w-4 h-4 text-primary" />
-                Voice Tone
-              </Label>
-              <Select>
-                <SelectTrigger className="glass-panel border-white/20 focus:border-primary focus:neon-glow">
-                  <SelectValue placeholder="Select tone" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="professional">Professional</SelectItem>
-                  <SelectItem value="casual">Casual</SelectItem>
-                  <SelectItem value="enthusiastic">Enthusiastic</SelectItem>
-                  <SelectItem value="formal">Formal</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
-
-      <Button
-        onClick={handleGenerate}
-        disabled={isGenerating}
-        className="w-full h-14 text-lg font-semibold bg-gradient-to-r from-primary to-neon-blue-dark hover:from-neon-blue-dark hover:to-primary neon-glow-strong transition-all duration-300 hover:scale-[1.02]"
-      >
-        {isGenerating ? (
-          <>
-            <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-            Generating Slides...
-          </>
-        ) : (
-          <>
-            <Sparkles className="mr-2 h-5 w-5" />
-            Generate Slides
-          </>
-        )}
-      </Button>
-    </div>
+    </>
   );
 };
 
