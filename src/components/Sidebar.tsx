@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Menu, X, Clock, MoreVertical, Sparkles, Settings, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { DarkModeToggle } from "./DarkModeToggle";
 
 interface HistoryItem {
   id: string;
